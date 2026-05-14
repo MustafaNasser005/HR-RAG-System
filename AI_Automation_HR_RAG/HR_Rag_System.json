@@ -1,0 +1,619 @@
+{
+  "name": "HR_Rag_System",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Upload & Process",
+        "formDescription": "Please upload the candidate's CV",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Upload & Process",
+              "fieldType": "file",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        -2336,
+        -656
+      ],
+      "id": "6cb48476-0707-409d-924b-4ff7a40656b7",
+      "name": "On form submission",
+      "webhookId": "e91915ee-3bc1-402e-b0d8-7f68fbf1114f"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===============================\n// 📌 CV PARSER — POST-PROCESS NODE\n// Extracts all fields from Claude output\n// ===============================\n\nconst input = $input.first().json;\n\n// =====================\n// STEP 1: Get raw text from Claude response\n// =====================\nconst rawText =\n  input?.content?.[0]?.text ||   // HTTP Request node format\n  input?.text ||                  // direct text field\n  input?.message?.content?.[0]?.text ||\n  \"\";\n\nif (!rawText) {\n  throw new Error(\"No Claude response found. Check previous node output.\");\n}\n\n// =====================\n// STEP 2: Clean & parse JSON\n// =====================\nconst jsonString = rawText\n  .replace(/^```json\\s*/i, \"\")\n  .replace(/^```\\s*/i, \"\")\n  .replace(/```\\s*$/i, \"\")\n  .trim();\n\nlet parsed;\ntry {\n  parsed = JSON.parse(jsonString);\n} catch (e) {\n  const match = jsonString.match(/\\{[\\s\\S]+\\}/);\n  if (match) {\n    try {\n      parsed = JSON.parse(match[0]);\n    } catch (e2) {\n      throw new Error(\"Failed to parse JSON. Raw preview: \" + rawText.substring(0, 300));\n    }\n  } else {\n    throw new Error(\"No JSON object found in response. Raw preview: \" + rawText.substring(0, 300));\n  }\n}\n\n// =====================\n// STEP 3: Normalize all fields\n// =====================\n\n// Arrays\nparsed.skills          = Array.isArray(parsed.skills)          ? parsed.skills          : [];\nparsed.internships     = Array.isArray(parsed.internships)     ? parsed.internships     : [];\nparsed.projects        = Array.isArray(parsed.projects)        ? parsed.projects        : [];\nparsed.education       = Array.isArray(parsed.education)       ? parsed.education       : [];\nparsed.certifications  = Array.isArray(parsed.certifications)  ? parsed.certifications  : [];\nparsed.languages       = Array.isArray(parsed.languages)       ? parsed.languages       : [];\n\n// Strings\nparsed.name             = parsed.name             || \"\";\nparsed.email            = parsed.email            || \"\";\nparsed.phone            = parsed.phone            || \"\";\nparsed.track            = parsed.track            || \"\";\nparsed.experience_level = parsed.experience_level || \"Fresher\";\nparsed.summary          = parsed.summary          || \"\";\n\n// Numbers\nparsed.years_experience  = parsed.years_experience  ?? 0;\nparsed.confidence_score  = parsed.confidence_score  ?? 0;\n\n// Fix URLs — add https:// if missing\nif (parsed.linkedin && !parsed.linkedin.startsWith(\"http\")) {\n  parsed.linkedin = \"https://\" + parsed.linkedin;\n}\nif (parsed.github && !parsed.github.startsWith(\"http\")) {\n  parsed.github = \"https://\" + parsed.github;\n}\n\n// =====================\n// STEP 4: Add metadata\n// =====================\nparsed.parsed_at   = new Date().toISOString();\nparsed.skill_count = parsed.skills.length;\n\n// =====================\n// STEP 5: Return flat clean object\n// =====================\nreturn {\n  // ── Identity ──────────────────────\n  name:              parsed.name,\n  email:             parsed.email,\n  phone:             parsed.phone,\n  linkedin:          parsed.linkedin,\n  github:            parsed.github,\n\n  // ── Career ────────────────────────\n  track:             parsed.track,\n  years_experience:  parsed.years_experience,\n  experience_level:  parsed.experience_level,\n  summary:           parsed.summary,\n\n  // ── Skills ────────────────────────\n  skills:            parsed.skills,\n  skill_count:       parsed.skill_count,\n\n  // ── Experience ────────────────────\n  internships:       parsed.internships,\n  projects:          parsed.projects,\n\n  // ── Education ─────────────────────\n  education:         parsed.education,\n  certifications:    parsed.certifications,\n  languages:         parsed.languages,\n\n  // ── Meta ──────────────────────────\n  confidence_score:  parsed.confidence_score,\n  parsed_at:         parsed.parsed_at,\n};"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1488,
+        -784
+      ],
+      "id": "83c5a330-bb23-44c5-aa55-334f1c1166e0",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "operation": "pdf",
+        "binaryPropertyName": "=Upload___Process",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1.1,
+      "position": [
+        -2096,
+        -784
+      ],
+      "id": "e430ff15-535f-4a31-8466-57fc407b2835",
+      "name": "Extract from File"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=```\nYou are an expert HR AI system specialized in intelligent CV analysis and structured data extraction.\n\n==================================================\n🔥 CRITICAL RULE — EMAIL IS HIGHEST PRIORITY\n==================================================\n\nBefore doing ANYTHING else, follow these steps:\n\nSTEP 1 — SCAN FOR EMAIL:\n- Search the ENTIRE text for any \"@\" symbol\n- Capture the full word containing \"@\"\n- Include full domain (.com / .net / .org / .co.uk / etc.)\n- Remove trailing punctuation: . , ; ) ]\n- Valid examples:\n  name@gmail.com\n  name.surname@company.co.uk\n  test123@outlook.com\n\nSTEP 2 — IF YOU THINK EMAIL IS MISSING:\n- Search again in: header / footer / contact section / about section\n- ONLY return \"\" if absolutely NOTHING with \"@\" exists in the entire text\n\nSTEP 3 — NEVER skip this scan. EMAIL must be extracted first before any other field.\n\n==================================================\nCORE OBJECTIVE\n==================================================\n\nExtract exactly 9 fields from the CV text below.\nReturn clean structured JSON only.\n\n==================================================\nEXTRACTION RULES\n==================================================\n\n1) NAME:\n- Full personal name from top or most prominent section.\n- Ignore company names, universities, job titles.\n- If not found return \"\".\n\n2) PHONE:\n- Extract phone number anywhere in CV.\n- International format preferred.\n- If not found return \"\".\n\n3) EMAIL:\n- Already extracted in CRITICAL RULE above.\n- Double check before returning.\n- NEVER return \"\" if \"@\" exists anywhere.\n\n4) LINKEDIN:\n- Extract full LinkedIn URL.\n- Always add https:// if missing.\n- If only username: https://linkedin.com/in/username\n- If not found return \"\".\n\n5) GITHUB:\n- Extract full GitHub URL.\n- Always add https:// if missing.\n- If only username: https://github.com/username\n- If not found return \"\".\n\n6) YEARS EXPERIENCE:\n- Read full-time, part-time, freelance, internships, projects.\n- Estimate total practical experience.\n- Round to 1 decimal.\n- If dates missing, estimate from graduation year and project depth.\n- Return as number only.\n\n7) EXPERIENCE LEVEL:\n- 0 = Fresher\n- 0.1 to 2 = Junior\n- 3 to 5 = Mid-Level\n- 6 and above = Senior\n- Return as text only.\n\n8) TRACK:\n- Analyze full CV and return ONE main professional track.\n- Examples:\n  AI and Data Science / Machine Learning Engineer / Data Scientist /\n  Data Analyst / Software Engineer / Frontend Developer /\n  Backend Developer / Full Stack Developer / Mobile Developer /\n  DevOps Engineer / Cyber Security / Cloud Engineer / UI/UX Designer\n- Return as text only.\n\n9) CV NAME:\n- If file or document name mentioned, use it.\n- If not found generate: FirstName_LastName_Track\n- Example: Ahmed_Mohamed_DataScientist\n- No spaces, underscores only.\n\n==================================================\nSTRICT OUTPUT FORMAT\n==================================================\n\nReturn ONLY this JSON.\nNo markdown.\nNo explanation.\nNo extra text.\nNo code blocks.\nNo additional fields.\n\n{\n  \"name\": \"\",\n  \"phone\": \"\",\n  \"email\": \"\",\n  \"linkedin\": \"\",\n  \"github\": \"\",\n  \"years_experience\": 0,\n  \"experience_level\": \"\",\n  \"track\": \"\",\n  \"cv_name\": \"\"\n}\n\n==================================================\nCV TEXT:\n==================================================\n\n{{ $json.text }}\n```\n\nانسخه كامل وحطه في الـ LLM node ✅\n==================================================\n🔥 CRITICAL RULE (HIGHEST PRIORITY)\n==================================================\n\nEMAIL IS THE MOST IMPORTANT FIELD.\n\nYou MUST extract the email FIRST before doing ANY other analysis.\n\nIf an email exists anywhere in the text, you MUST find it.\n\nEven if the CV is messy, scanned, or unstructured, NEVER return empty email if \"@\" exists.\n\n==================================================\nEMAIL EXTRACTION ENGINE RULE\n==================================================\n\nBefore answering, perform this internal step:\n\n1) Scan full text for \"@\" symbol\n2) Capture full word containing \"@\"\n3) Expand boundaries:\n   - include full domain (.com, .net, .org, etc.)\n4) Remove trailing punctuation like:\n   \".\", \",\", \";\", \")\"\n\nExamples:\n- name@gmail.com\n- name.surname@company.co.uk\n- test123@outlook.com\n\nIf ANY match exists → email MUST NOT be empty.\n\n==================================================\nFALLBACK RULE (VERY IMPORTANT)\n==================================================\n\nIf you think email is missing:\nYOU MUST search again specifically for:\n- lines containing \"@\"\n- contact sections\n- footer sections\n- header sections\n\nONLY return \"\" if absolutely nothing with \"@\" exists.\n\n==================================================\nCORE OBJECTIVE\n==================================================\n\nExtract structured data from CV.\n\n==================================================\nOUTPUT FORMAT (STRICT JSON ONLY)\n==================================================\n\n{\n  \"name\": \"\",\n  \"phone\": \"\",\n  \"email\": \"\",\n  \"linkedin\": \"\",\n  \"github\": \"\",\n  \"years_experience\": 0,\n  \"experience_level\": \"\",\n  \"track\": \"\",\n  \"cv_name\": \"\"\n}\n\n==================================================\nRULES (SUMMARY)\n==================================================\n\n- Always extract email if \"@\" exists\n- Email has highest priority\n- Never ignore footer/contact section\n- Never skip scanning full text\n- Return JSON only\n- No markdown, no explanation\n\n==================================================\nCV TEXT:\n==================================================\n\n{{ $json.text }}",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -1856,
+        -784
+      ],
+      "id": "906ba0d4-4476-45e6-8ea6-af52a9303c45",
+      "name": "Basic LLM Chain"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chatTrigger",
+      "typeVersion": 1.4,
+      "position": [
+        -2176,
+        -352
+      ],
+      "id": "c74b5682-75cb-4d09-abce-7f80d6fcc616",
+      "name": "When chat message received",
+      "webhookId": "4944b4ba-05aa-49ef-adbd-98b435be0adc"
+    },
+    {
+      "parameters": {
+        "options": {
+          "systemMessage": "```text id=\"o4l2fk\"\nYou are a professional CV Management Assistant specialized in handling resumes, candidate databases, ATS workflows, and HR email automation.\n\n==================================================\nDATABASE COLUMNS\n==================================================\n\nName\nPhone\nEmail\nLinkedIn\nGitHub\nYears_Experience\nExperience_Level\nTrack\nCV_Name\n\n==================================================\nCORE RESPONSIBILITIES\n==================================================\n\nYou can perform these actions:\n\n1. Add new CVs\n2. Edit existing CVs\n3. Search and filter CVs\n4. Sort CVs by experience or relevance\n5. Delete CVs (ONLY after confirmation)\n6. Recommend best candidates\n7. Count total CVs\n8. Generate HR summaries\n9. Send emails to candidates\n10. Retrieve candidate information automatically from database\n\n==================================================\nGENERAL RULES\n==================================================\n\n- Always reply in English.\n- Be clear, professional, and structured.\n- Behave like an HR recruiter + ATS system.\n- Understand both Arabic and English requests.\n- Use tables when useful.\n- Never assume missing data.\n- Always verify actions before execution.\n\n==================================================\nDELETE RULES\n==================================================\n\nBefore deleting ANY CV:\n- ALWAYS ask for confirmation first.\n\nExample:\n\"Are you sure you want to delete Ahmed's CV? Yes / No\"\n\n==================================================\nEMAIL AUTOMATION RULES\n==================================================\n\nWhen sending emails:\n\n- ALWAYS search the database automatically first.\n- Automatically retrieve:\n  - Candidate Name\n  - Candidate Email\n  - Candidate Track / Specialization\n\n- NEVER ask the user again for:\n  - Email address\n  - Track / specialization\nIF the candidate already exists in the database.\n\nOnly ask the user if:\n1. Candidate not found\n2. Email field is empty\n3. Multiple similar names exist\n\n==================================================\nEMAIL WORKFLOW\n==================================================\n\n1. Find candidate in database\n2. Retrieve candidate details automatically\n3. Generate email using proper template\n4. Show email preview\n5. Ask for confirmation\n6. Send email only after confirmation\n\n==================================================\nEMAIL TYPES\n==================================================\n\n1. Interview Invitation\n2. Acceptance Email\n3. Rejection Email\n4. Follow-up Email\n5. Custom Email\n\n==================================================\nACCEPTANCE EMAIL TEMPLATE\n==================================================\n\nWhen the user says:\n\"Send an acceptance email to [Name]\"\n\nUse this EXACT template:\n\nSubject:\nCongratulations — You Have Been Accepted into the Hiring Program\n\nBody:\nDear [Full Name],\n\nGreetings,\n\nWe are pleased to inform you that you have been successfully accepted into our hiring program after reviewing your CV and evaluating your outstanding experience in the field of [Specialization].\n\nPlease contact us to schedule your work start date.\n\nBest regards,\nHR Team\n\n==================================================\nACCEPTANCE EMAIL RULES\n==================================================\n\n- Replace [Full Name] with candidate name from database\n- Replace [Specialization] with candidate track from database\n- Do NOT modify any other wording\n- Automatically retrieve data from spreadsheet/database\n- Show preview before sending\n- Ask for confirmation before sending\n\n==================================================\nEMAIL PREVIEW FORMAT\n==================================================\n\nCandidate Found:\nName: [Candidate Name]\nEmail: [Candidate Email]\nTrack: [Candidate Track]\n\nEmail Preview:\n[Generated Email]\n\nDo you confirm sending this email?\nYes / No\n\n==================================================\nSEARCH & FILTER EXAMPLES\n==================================================\n\n- Show ML candidates\n- Show candidates with 3+ years experience\n- Show candidates with GitHub links\n- Show fresh graduates\n- Sort by highest experience\n- Sort alphabetically\n\n==================================================\nEXAMPLES\n==================================================\n\nUser:\nHow many CVs do I currently have?\n\nAssistant:\nYou currently have 24 CVs.\n\n--------------------------------------------------\n\nUser:\nDelete Ahmed CV\n\nAssistant:\nAre you sure you want to delete Ahmed's CV?\nYes / No\n\n--------------------------------------------------\n\nUser:\nSend an acceptance email to Mahmoud Nasser Abdel-Fatah\n\nAssistant:\nCandidate Found:\nName: Mahmoud Nasser Abdel-Fatah\nEmail: mahmoud@email.com\nTrack: Data Scientist\n\nEmail Preview:\n\nSubject:\nCongratulations — You Have Been Accepted into the Hiring Program\n\nBody:\nDear Mahmoud Nasser Abdel-Fatah,\n\nGreetings,\n\nWe are pleased to inform you that you have been successfully accepted into our hiring program after reviewing your CV and evaluating your outstanding experience in the field of Data Scientist.\n\nPlease contact us to schedule your work start date.\n\nBest regards,\nHR Team\n\nDo you confirm sending this email?\nYes / No\n\n==================================================\nFINAL BEHAVIOR\n==================================================\n\nAlways prioritize:\n- Accuracy\n- Smart filtering\n- ATS-style workflow\n- Automatic database retrieval\n- Professional HR communication\n- Confirmation before destructive or email actions\n```\n"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        -1856,
+        -352
+      ],
+      "id": "e43329d1-899b-4cb8-a812-45d30f94f106",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "contextWindowLength": 50
+      },
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -1760,
+        -128
+      ],
+      "id": "56994656-112d-4607-baee-362ab9a9658f",
+      "name": "Simple Memory"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are an HR recruitment assistant.\n\nYour task is to review extracted CV data and decide if the candidate is accepted.\n\nAcceptance criteria:\n- Relevant education\n- Good skills matching the role\n- Experience or strong projects\n- Clear CV structure\n- Professional communication\n\nIf the CV is strong and suitable, reply with:\n\n\"Congratulations! After reviewing your CV, we are pleased to inform you that you have been accepted for the next stage of the hiring process. Our team will contact you soon with the next steps.\"\n\nIf the CV is weak or not suitable, reply politely with:\n\n\"Thank you for your interest. After reviewing your CV, we will not be moving forward at this stage. We appreciate your time and wish you success.\"\n\nAlways be professional and concise.",
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        -480,
+        416
+      ],
+      "id": "18d1e75b-607d-4db4-b47b-c8f92ec4a46c",
+      "name": "Basic LLM Chain1"
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -832,
+        928
+      ],
+      "id": "e4e8d050-73b9-41ac-b97d-60c36083de12",
+      "name": "Groq Chat Model2",
+      "credentials": {
+        "groqApi": {
+          "id": "FXgSem9TUFrdGZ4c",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1856,
+        -576
+      ],
+      "id": "0b86bc12-c6ef-4ae1-92b9-8b62f301fa41",
+      "name": "Groq Chat Model",
+      "credentials": {
+        "groqApi": {
+          "id": "FXgSem9TUFrdGZ4c",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts",
+          "mode": "list",
+          "cachedResultName": "Info_CVs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Phone": "={{ $json.phone }}",
+            "LinkedIn": "={{ $json.linkedin }}",
+            "GitHub": "={{ $json.github }}",
+            "Years_Experience": "={{ $json.years_experience }}",
+            "Experience_Level": "={{ $json.experience_level }}",
+            "Track": "={{ $json.track }}",
+            "CV_Name": "={{ $('On form submission').item.json['Upload & Process'][0].filename }}",
+            "Email": "={{ $json.email }}"
+          },
+          "matchingColumns": [],
+          "schema": [
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "LinkedIn",
+              "displayName": "LinkedIn",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "GitHub",
+              "displayName": "GitHub",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Years_Experience",
+              "displayName": "Years_Experience",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Experience_Level",
+              "displayName": "Experience_Level",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Track",
+              "displayName": "Track",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "CV_Name",
+              "displayName": "CV_Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -1248,
+        -784
+      ],
+      "id": "0bd49f64-988a-40ec-adce-96f202bab7fa",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dknWIOUn5Ba85tfw",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "openai/gpt-oss-120b",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        -1904,
+        -128
+      ],
+      "id": "8c562190-b201-49ad-aac9-c7ebac9537d6",
+      "name": "Groq Chat Model1",
+      "credentials": {
+        "groqApi": {
+          "id": "FXgSem9TUFrdGZ4c",
+          "name": "Groq account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "delete",
+        "documentId": {
+          "__rl": true,
+          "value": "1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts",
+          "mode": "list",
+          "cachedResultName": "Info_CVs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit#gid=0"
+        }
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [
+        -1344,
+        -192
+      ],
+      "id": "ce425167-4a92-404c-8b27-202c66a4567e",
+      "name": "Delete rows or columns from sheet in Google Sheets",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dknWIOUn5Ba85tfw",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "zo2anasser005@gmail.com",
+        "subject": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Subject', ``, 'string') }}",
+        "emailType": "text",
+        "message": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Message', ``, 'string') }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmailTool",
+      "typeVersion": 2.2,
+      "position": [
+        -1600,
+        -160
+      ],
+      "id": "05df330b-f11c-4f6a-965b-b0411cd8b40d",
+      "name": "Send a message in Gmail",
+      "webhookId": "4c04bb4e-5ab9-4521-b521-83ea63bbfc02",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "K62xFQtrNc1oOX4d",
+          "name": "Gmail account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "Use this tool to get all CVs data from the spreadsheet.\nAlways use this tool first before answering any question about candidates.",
+        "documentId": {
+          "__rl": true,
+          "value": "1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts",
+          "mode": "list",
+          "cachedResultName": "Info_CVs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1wk2dF4Jborszr3JFYpDRmOpZs35ZhFNlBz1FeloBnts/edit#gid=0"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [
+        -1072,
+        -208
+      ],
+      "id": "2fc2b901-0b4a-46ed-99c8-256a7b8c28d5",
+      "name": "Get row(s) in sheet in Google Sheets",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "dknWIOUn5Ba85tfw",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## AI-Powered CV Processing & Recruitment Automation\n\nThis automation streamlines the recruitment workflow by automatically handling uploaded CVs from start to finish.\n\nWorkflow:\n1. Upload CV files (PDF/DOCX)\n2. Extract and analyze CV content using AI\n3. Detect candidate information automatically:\n   - Full Name\n   - Email\n   - Phone Number\n   - LinkedIn\n   - GitHub\n   - Experience Level\n   - Years of Experience\n   - Career Track / Specialization\n   - Skills\n4. Generate structured candidate data\n5. Store all extracted information directly into Google Sheets\n6. Organize candidates for HR filtering and recruitment workflows\n\nThe system acts like an intelligent ATS (Applicant Tracking System), reducing manual HR work and improving candidate management efficiency.",
+        "height": 496,
+        "width": 2016,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2960,
+        -912
+      ],
+      "id": "76df80ed-fadd-48de-80da-7704bbbede24",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "content": "## AI Recruitment Assistant Chatbot\n\nAn intelligent HR chatbot designed to manage and interact with candidate databases automatically.\n\nCapabilities:\n- Search candidates instantly\n- Filter CVs by track, experience, or skills\n- Count total CVs\n- Recommend best candidates for specific roles\n- Send interview, acceptance, rejection, and follow-up emails\n- Retrieve candidate details automatically from Google Sheets\n- Manage recruitment workflows professionally\n\nThe chatbot behaves like a smart HR assistant combined with an ATS system, helping recruiters save time and automate hiring operations efficiently.",
+        "height": 400,
+        "width": 2032,
+        "color": 3
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -2960,
+        -400
+      ],
+      "id": "db244050-bfc9-4717-a1a2-2413eaaf1635",
+      "name": "Sticky Note1"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "On form submission": {
+      "main": [
+        [
+          {
+            "node": "Extract from File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract from File": {
+      "main": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Basic LLM Chain": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When chat message received": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model2": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        []
+      ]
+    },
+    "Basic LLM Chain1": {
+      "main": [
+        []
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Basic LLM Chain",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Append row in sheet": {
+      "main": [
+        []
+      ]
+    },
+    "Groq Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete rows or columns from sheet in Google Sheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message in Gmail": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get row(s) in sheet in Google Sheets": {
+      "ai_tool": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "a7f8b5c2-3495-4ba1-8c0c-c9b35918238b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "3d20eed4d2a21bb47d4653ee1cb3eec86397fb6b7694b665b76bc017b18212c0"
+  },
+  "id": "L0KiTLSmk6VA1CTf",
+  "tags": []
+}
